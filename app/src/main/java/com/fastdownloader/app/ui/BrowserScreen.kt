@@ -8,6 +8,7 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.net.Uri
 import android.os.Build
+import android.os.Environment
 import android.webkit.CookieManager
 import android.webkit.JavascriptInterface
 import android.webkit.URLUtil
@@ -47,9 +48,8 @@ import androidx.compose.ui.viewinterop.AndroidView
 import androidx.core.net.toUri
 import kotlinx.coroutines.flow.firstOrNull
 import kotlinx.coroutines.launch
-import androidx.compose.material3.ExtendedFloatingActionButton
 
-
+// -------------------- DATA --------------------
 private data class MediaCandidate(val url: String, val mime: String? = null)
 
 /** JS bridge to receive media URLs from injected scripts. */
@@ -62,6 +62,7 @@ private class MediaBridge(private val onFound: (String, String?) -> Unit) {
     }
 }
 
+// -------------------- MAIN SCREEN --------------------
 @OptIn(ExperimentalMaterial3Api::class)
 @SuppressLint("SetJavaScriptEnabled")
 @Composable
@@ -206,7 +207,7 @@ fun BrowserScreen(startUrl: String = "") {
                                 }
                             }
 
-                            // Navigation + request interception (sniffer path #1)
+                            // Navigation + request interception
                             webViewClient = object : WebViewClient() {
                                 override fun shouldOverrideUrlLoading(
                                     view: WebView?, request: WebResourceRequest?
@@ -261,7 +262,7 @@ fun BrowserScreen(startUrl: String = "") {
                                 ) { /* optional */ }
                             }
 
-                            // Downloads: prefer our service (if folder picked), else DownloadManager
+                            // Downloads
                             setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
                                 val fileName = URLUtil.guessFileName(url, contentDisposition, mimeType)
                                 scope.launch {
@@ -293,16 +294,13 @@ fun BrowserScreen(startUrl: String = "") {
                     }
                 )
 
-                // ✅ FAB is inside the Box scope now
                 if (candidates.isNotEmpty()) {
                     ExtendedFloatingActionButton(
                         onClick = { showPicker = true },
                         modifier = Modifier
                             .align(Alignment.BottomEnd)
                             .padding(16.dp)
-                    ) {
-                        Text("Download (${candidates.size})")
-                    }
+                    ) { Text("Download (${candidates.size})") }
                 }
 
                 if (showHome) {
@@ -316,7 +314,6 @@ fun BrowserScreen(startUrl: String = "") {
         }
     }
 
-    // Bottom sheet picker for captured media
     if (showPicker) {
         ModalBottomSheet(onDismissRequest = { showPicker = false }) {
             Text(
@@ -343,7 +340,6 @@ fun BrowserScreen(startUrl: String = "") {
                     ) {
                         Button(onClick = {
                             val fileName = URLUtil.guessFileName(c.url, null, c.mime)
-                            // use the composable's 'context'
                             val ctx = context
                             scope.launch {
                                 val tree = com.fastdownloader.app.data.readTreeUri(ctx).firstOrNull()
@@ -370,77 +366,32 @@ fun BrowserScreen(startUrl: String = "") {
     }
 }
 
-/** Injects JS to discover <video> sources and common assignment paths. */
+// -------------------- HELPERS --------------------
+/** Injects JS to discover <video> sources. */
 private fun WebView.injectSniffer() {
     val js = """
         (function(){
-          if (window.__fvdHooked) return; window.__fvdHooked = true;
-          function send(u,m){ try{ AndroidBridge.onMediaWithMime(u||'', m||''); }catch(e){} }
-          function sendU(u){ try{ AndroidBridge.onMedia(u||''); }catch(e){} }
-          function grabVideo(v){
-            try{
-              if (v.currentSrc) sendU(v.currentSrc);
-              if (v.src) sendU(v.src);
-              var ss = v.querySelectorAll('source'); 
-              for (var i=0;i<ss.length;i++){ var s=ss[i]; if (s.src) sendU(s.src); }
-              v.addEventListener('play', function(){ try{ if (this.currentSrc) sendU(this.currentSrc); }catch(e){} }, {once:true});
-            }catch(e){}
-          }
-          var vids = document.getElementsByTagName('video');
-          for (var i=0;i<vids.length;i++){ grabVideo(vids[i]); }
-          var mo = new MutationObserver(function(muts){
-            for (var i=0;i<muts.length;i++){
-              var ms = muts[i];
-              if (ms.addedNodes) for (var j=0;j<ms.addedNodes.length;j++){
-                var n = ms.addedNodes[j];
-                try{
-                  if (n.tagName && n.tagName.toLowerCase()==='video') grabVideo(n);
-                  if (n.querySelectorAll){
-                    var vs = n.querySelectorAll('video');
-                    for (var k=0;k<vs.length;k++) grabVideo(vs[k]);
-                  }
-                }catch(e){}
-              }
+          try {
+            var videos = document.querySelectorAll('video');
+            for (var i=0;i<videos.length;i++){
+              var v = videos[i];
+              if (v.currentSrc) AndroidBridge.onMedia(v.currentSrc);
+              if (v.src) AndroidBridge.onMedia(v.src);
+              var ss = v.querySelectorAll('source');
+              for (var j=0;j<ss.length;j++){ if (ss[j].src) AndroidBridge.onMedia(ss[j].src); }
             }
-          });
-          mo.observe(document.documentElement||document, {childList:true, subtree:true});
-          try{
-            var dset = Object.getOwnPropertyDescriptor(HTMLMediaElement.prototype, 'src');
-            if (dset && dset.set){
-              Object.defineProperty(HTMLMediaElement.prototype, 'src', {
-                set: function(v){ try{ sendU(v); }catch(e){}; return dset.set.call(this, v); },
-                get: dset.get
-              });
-            }
-          }catch(e){}
-          try{
-            var ofetch = window.fetch;
-            window.fetch = function(){ 
-              try{ var u = arguments[0]; if (typeof u === 'string') maybe(u); else if (u && u.url) maybe(u.url); }catch(e){}
-              return ofetch.apply(this, arguments);
-            };
-            var oopen = XMLHttpRequest.prototype.open;
-            XMLHttpRequest.prototype.open = function(method, url){
-              try{ maybe(url); }catch(e){}
-              return oopen.apply(this, arguments);
-            };
-            function maybe(u){
-              if (!u) return;
-              var L = u.toLowerCase();
-              if (L.includes('.m3u8')||L.includes('.mp4')||L.includes('.webm')||L.includes('.mpd')||L.includes('/hls/')) sendU(u);
-            }
-          }catch(e){}
+          } catch(e){}
         })();
     """.trimIndent()
     if (Build.VERSION.SDK_INT >= 19) evaluateJavascript(js, null) else loadUrl("javascript:$js")
 }
 
-/** Heuristic: URL looks like a media stream. */
+/** URL looks like media? */
 private fun looksLikeMedia(u: String): Boolean {
-    val L = u.lowercase()
-    return L.contains(".m3u8") || L.contains(".mp4") || L.contains(".webm") ||
-            L.contains(".mpd") || L.contains(".mkv") || L.contains(".mov") ||
-            L.contains(".ts?") || L.endsWith(".ts") || L.contains("/hls/")
+    val lower = u.lowercase()
+    return lower.contains(".m3u8") || lower.contains(".mp4") || lower.contains(".webm") ||
+            lower.contains(".mpd") || lower.contains(".mkv") || lower.contains(".mov") ||
+            lower.contains(".ts?") || lower.endsWith(".ts") || lower.contains("/hls/")
 }
 
 private fun guessMimeFromUrl(u: String): String? = when {
@@ -454,80 +405,10 @@ private fun guessMimeFromUrl(u: String): String? = when {
     else -> null
 }
 
-@Composable
-private fun HomeOverlay(
-    onQuickSiteClick: (String) -> Unit,
-    recentSites: List<String>,
-    onHowToDownload: () -> Unit
-) {
-    val quickSites = listOf(
-        QuickSite("YouTube", "https://www.youtube.com"),
-        QuickSite("Facebook", "https://m.facebook.com"),
-        QuickSite("Instagram", "https://www.instagram.com"),
-        QuickSite("Reddit", "https://www.reddit.com"),
-        QuickSite("Wikipedia", "https://www.wikipedia.org"),
-        QuickSite("X / Twitter", "https://twitter.com"),
-    )
-    Column(
-        Modifier
-            .fillMaxSize()
-            .padding(horizontal = 16.dp)
-    ) {
-        Spacer(Modifier.height(8.dp))
-        LazyRow(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
-            items(quickSites) { q -> QuickSiteChip(label = q.label) { onQuickSiteClick(q.url) } }
-        }
-        Spacer(Modifier.height(16.dp))
-        if (recentSites.isNotEmpty()) {
-            Text("Recently used websites", style = MaterialTheme.typography.labelLarge)
-            Spacer(Modifier.height(8.dp))
-            LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                items(recentSites) { host -> QuickSiteChip(label = host) { onQuickSiteClick("https://$host") } }
-            }
-            Spacer(Modifier.height(16.dp))
-        }
-        OutlinedButton(onClick = onHowToDownload, modifier = Modifier.fillMaxWidth()) {
-            Text("How to Download")
-        }
-    }
-}
-
-private data class QuickSite(val label: String, val url: String)
-
-@Composable
-private fun QuickSiteChip(label: String, onClick: () -> Unit) {
-    Surface(onClick = onClick, shape = MaterialTheme.shapes.extraLarge, tonalElevation = 2.dp) {
-        Box(Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) { Text(label) }
-    }
-}
-
-private const val HOME_HTML = """
-<!DOCTYPE html><html><head>
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<style>
-body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; margin:0; padding:24px; }
-h1 { font-size: 22px; margin: 8px 0 16px; }
-.grid { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:12px; }
-.card { border:1px solid #e5e7eb; border-radius:12px; padding:16px; text-decoration:none; color:#111827; }
-.card:hover { background:#f9fafb; }
-small { color:#6b7280; }
-</style></head>
-<body>
-  <h1>Fast Browser</h1>
-  <div class="grid">
-    <a class="card" href="https://www.youtube.com"><b>YouTube</b><br><small>youtube.com</small></a>
-    <a class="card" href="https://m.facebook.com"><b>Facebook</b><br><small>facebook.com</small></a>
-    <a class="card" href="https://www.instagram.com"><b>Instagram</b><br><small>instagram.com</small></a>
-    <a class="card" href="https://twitter.com"><b>Twitter / X</b><br><small>twitter.com</small></a>
-    <a class="card" href="https://www.reddit.com"><b>Reddit</b><br><small>reddit.com</small></a>
-    <a class="card" href="https://www.wikipedia.org"><b>Wikipedia</b><br><small>wikipedia.org</small></a>
-  </div>
-</body></html>
-"""
-
+/** Normalize input to URL or Google search */
 private fun normalizeInput(inputRaw: String): String {
     val raw = inputRaw.trim()
-    if (raw.isEmpty()) return "data:text/html;charset=utf-8,${Uri.encode(HOME_HTML)}"
+    if (raw.isEmpty()) return "about:blank"
     val lower = raw.lowercase()
     val looksLikeUrl =
         lower.startsWith("http://") || lower.startsWith("https://") ||
@@ -540,19 +421,106 @@ private fun normalizeInput(inputRaw: String): String {
     }
 }
 
+/** Build a DownloadManager.Request with headers + cookies. */
+private fun buildDownloadRequest(
+    context: Context,
+    url: String,
+    userAgent: String?,
+    contentDisposition: String?,
+    mimeType: String?
+): DownloadManager.Request {
+    val cookies = CookieManager.getInstance().getCookie(url)
+    val fileName = URLUtil.guessFileName(url, contentDisposition, mimeType)
+
+    return DownloadManager.Request(Uri.parse(url)).apply {
+        setTitle(fileName)
+        setDescription("Downloading…")
+        setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
+        setAllowedOverMetered(true)
+        setAllowedOverRoaming(true)
+        userAgent?.let { addRequestHeader("User-Agent", it) }
+        if (!cookies.isNullOrBlank()) addRequestHeader("Cookie", cookies)
+        setMimeType(mimeType ?: "application/octet-stream")
+        setDestinationInExternalPublicDir(Environment.DIRECTORY_DOWNLOADS, fileName)
+    }
+}
+
+/** Updated enqueueDownload using buildDownloadRequest. */
 private fun enqueueDownload(
     context: Context, url: String, userAgent: String?, contentDisposition: String?, mimeType: String?
 ) {
     runCatching {
-        val fileName = URLUtil.guessFileName(url, contentDisposition, mimeType)
-        val req = DownloadManager.Request(url.toUri())
-            .setTitle(fileName)
-            .setDescription("Downloading…")
-            .apply { userAgent?.let { addRequestHeader("User-Agent", it) } }
-            .setNotificationVisibility(DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED)
-            .setAllowedOverMetered(true)
-            .setAllowedOverRoaming(true)
+        val req = buildDownloadRequest(context, url, userAgent, contentDisposition, mimeType)
         val dm = context.getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
         dm.enqueue(req)
     }
 }
+
+// -------------------- HOME OVERLAY --------------------
+@Composable
+private fun HomeOverlay(
+    onQuickSiteClick: (String) -> Unit,
+    recentSites: List<String>,
+    onHowToDownload: () -> Unit
+) {
+    val quickSites = listOf(
+        QuickSite("YouTube", "https://www.youtube.com"),
+        QuickSite("Facebook", "https://m.facebook.com"),
+        QuickSite("Instagram", "https://www.instagram.com"),
+        QuickSite("Reddit", "https://www.reddit.com"),
+        QuickSite("Wikipedia", "https://www.wikipedia.org"),
+        QuickSite("Twitter / X", "https://twitter.com"),
+    )
+    Column(
+        Modifier
+            .fillMaxSize()
+            .padding(horizontal = 16.dp)
+    ) {
+        Spacer(Modifier.height(8.dp))
+        LazyRow(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            items(quickSites) { q -> QuickSiteChip(label = q.label) { onQuickSiteClick(q.url) } }
+        }
+        Spacer(Modifier.height(16.dp))
+        if (recentSites.isNotEmpty()) {
+            Text("Recent", style = MaterialTheme.typography.titleSmall)
+            Spacer(Modifier.height(8.dp))
+            LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                items(recentSites.take(8)) { host ->
+                    QuickSiteChip(label = host) { onQuickSiteClick("https://$host") }
+                }
+            }
+        }
+        Spacer(Modifier.height(16.dp))
+        OutlinedButton(onClick = onHowToDownload) { Text("How to download") }
+    }
+}
+
+private data class QuickSite(val label: String, val url: String)
+
+@Composable
+private fun QuickSiteChip(label: String, onClick: () -> Unit) {
+    OutlinedButton(onClick = onClick) { Text(label, maxLines = 1) }
+}
+
+// A tiny welcome page when startUrl is blank
+private const val HOME_HTML = """
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1"/>
+    <title>Fast Video Downloader</title>
+    <style>
+      body { font-family: -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Ubuntu,'Helvetica Neue',Arial; margin: 24px; }
+      h1 { font-size: 20px; margin-bottom: 12px; }
+      p { color: #444; line-height: 1.5; }
+      .hint { color: #777; font-size: 14px; margin-top: 16px; }
+    </style>
+  </head>
+  <body>
+    <h1>Welcome 👋</h1>
+    <p>Type a URL above, or search anything. When a video is detected, tap the Download button.</p>
+    <p class="hint">Tip: choose a download folder in Settings for best results.</p>
+  </body>
+</html>
+"""
