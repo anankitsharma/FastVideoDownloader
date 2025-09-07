@@ -56,4 +56,15 @@ dependencies {
     androidTestImplementation(libs.androidx.ui.test.junit4)
     debugImplementation(libs.androidx.ui.tooling)
     debugImplementation(libs.androidx.ui.test.manifest)
+
+    // 👇 Add this — provides Icons.Filled.Home/Download/Folder as ImageVector
+    implementation("androidx.compose.material:material-icons-extended")
+    implementation(libs.androidx.webkit) // for modern WebView features (optional but good)
+    implementation("androidx.navigation:navigation-compose:2.8.0")
+    implementation("androidx.documentfile:documentfile:1.0.1")   // SAF helpers
+    implementation("androidx.datastore:datastore-preferences:1.1.1") // save chosen folder
+    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")         // robust downloads
+    implementation("androidx.media3:media3-exoplayer:1.4.1")     // (for PlayerScreen soon)
+
 }

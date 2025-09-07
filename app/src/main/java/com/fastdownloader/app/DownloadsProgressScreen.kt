@@ -8,8 +8,8 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 
 @Composable
-fun FinishedScreen() {
+fun DownloadsProgressScreen() {
     Box(Modifier.fillMaxSize(), contentAlignment = Alignment.Center) {
-        Text("No finished downloads yet")
+        Text("No active downloads")
     }
 }
